@@ -65,6 +65,19 @@ func (s *Service) handlePresign(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrUnprocessable("kind 必须是 image/file/attachment/effect-file"))
 		return
 	}
+	if req.RefType != "prompt" || req.RefID <= 0 {
+		httpx.WriteError(w, httpx.ErrUnprocessable("refType 必须是 prompt 且 refId 有效"))
+		return
+	}
+	var promptExists bool
+	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM prompts WHERE id=$1)`, req.RefID).Scan(&promptExists); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if !promptExists {
+		httpx.WriteError(w, httpx.ErrUnprocessable("提示词不存在"))
+		return
+	}
 	if req.Size <= 0 || req.Size > s.cfg.MaxUploadBytes {
 		httpx.WriteError(w, httpx.ErrUnprocessable(fmt.Sprintf("文件大小必须在 1 到 %d 字节之间", s.cfg.MaxUploadBytes)))
 		return
@@ -114,6 +127,17 @@ func (s *Service) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	if req.Kind == "" {
 		req.Kind = "file"
 	}
+	if req.RefType != "prompt" || req.RefID <= 0 {
+		httpx.WriteError(w, httpx.ErrUnprocessable("refType 必须是 prompt 且 refId 有效"))
+		return
+	}
+	// The object key must match the server-issued format so clients cannot
+	// attach arbitrary objects.
+	expected := fmt.Sprintf("%s/%d/%s-%s", req.RefType, req.RefID, strings.ToLower(req.SHA256)[:16], req.Filename)
+	if req.ObjectKey != expected {
+		httpx.WriteError(w, httpx.ErrUnprocessable("objectKey 与预签名请求不一致"))
+		return
+	}
 	info, err := s.store.Stat(r.Context(), req.ObjectKey)
 	if err != nil {
 		httpx.WriteError(w, httpx.ErrUnprocessable("对象不存在或无法访问: "+err.Error()))
@@ -136,7 +160,8 @@ func (s *Service) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrUnprocessable("SHA-256 校验失败"))
 		return
 	}
-	// Verify MIME whitelist.
+	// Verify MIME whitelist + magic bytes so client-claimed types cannot smuggle
+	// HTML/SVG/scripts into the object store.
 	mime := strings.ToLower(req.MIME)
 	if mime == "" {
 		mime = "application/octet-stream"
@@ -145,6 +170,16 @@ func (s *Service) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	if allowed != nil && !allowed[mime] {
 		s.cleanupObject(r.Context(), req.ObjectKey)
 		httpx.WriteError(w, httpx.ErrUnprocessable("不允许的 MIME 类型: "+mime))
+		return
+	}
+	detected, derr := s.sniffContentType(r.Context(), req.ObjectKey)
+	if derr != nil {
+		httpx.WriteError(w, derr)
+		return
+	}
+	if !mimeCompatible(mime, detected) {
+		s.cleanupObject(r.Context(), req.ObjectKey)
+		httpx.WriteError(w, httpx.ErrUnprocessable("文件内容与声明的 MIME 类型不一致"))
 		return
 	}
 	var id int64
@@ -192,6 +227,35 @@ func (s *Service) handleAssetURL(w http.ResponseWriter, r *http.Request) {
 // cleanupObject removes an object that failed validation (best effort).
 func (s *Service) cleanupObject(ctx context.Context, key string) {
 	_ = s.store.Delete(ctx, key)
+}
+
+// sniffContentType reads the first 512 bytes to detect the real content type.
+func (s *Service) sniffContentType(ctx context.Context, key string) (string, error) {
+	rd, _, err := s.store.Get(ctx, key)
+	if err != nil {
+		return "", httpx.WrapError(err)
+	}
+	defer rd.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(rd, buf)
+	return http.DetectContentType(buf[:n]), nil
+}
+
+// mimeCompatible reports whether a detected type is acceptable for a claimed
+// MIME. octet-stream is a wildcard fallback; otherwise types must share a
+// major category.
+func mimeCompatible(claimed, detected string) bool {
+	claimed = strings.ToLower(claimed)
+	detected = strings.ToLower(detected)
+	if claimed == "application/octet-stream" || detected == "application/octet-stream" {
+		return true
+	}
+	if claimed == detected {
+		return true
+	}
+	c1 := strings.SplitN(claimed, "/", 2)[0]
+	d1 := strings.SplitN(detected, "/", 2)[0]
+	return c1 == d1
 }
 
 // verifySHA256 streams the object and compares its digest.

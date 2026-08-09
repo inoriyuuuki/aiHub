@@ -60,7 +60,7 @@ func (s *Service) mcpTools() []mcpx.ToolDef {
 				},
 				"required": []any{"slug"},
 			},
-			Write:   true,
+			Write:   false,
 			Delete:  true,
 			Group:   "skills",
 			Handler: s.mcpDeleteSkill,
@@ -85,7 +85,8 @@ func (s *Service) mcpReadSkills(ctx context.Context, args map[string]any) (any, 
 		}, nil
 	}
 	if slug, _ := args["slug"].(string); slug != "" {
-		d, ver, source, projSlug, aerr := s.resolveSkill(ctx, slug, "")
+		project, _ := args["project"].(string)
+		d, ver, source, projSlug, aerr := s.resolveSkill(ctx, slug, project)
 		if aerr != nil {
 			return nil, aerr
 		}

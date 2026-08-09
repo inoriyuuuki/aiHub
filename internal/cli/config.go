@@ -15,6 +15,7 @@ type Config struct {
 	ServerURL    string     `json:"serverUrl"`
 	Username     string     `json:"username"`
 	Token        string     `json:"token"`
+	TokenID      int64      `json:"tokenId,omitempty"`
 	Scopes       []string   `json:"scopes"`
 	TokenCreated time.Time  `json:"tokenCreatedAt"`
 	TokenExpires *time.Time `json:"tokenExpiresAt,omitempty"`
@@ -59,15 +60,7 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		os.Remove(tmp) //nolint:errcheck
-		return err
-	}
-	return os.Rename(tmp, p)
+	return atomicWrite0600(p, data)
 }
 
 // HasToken reports whether a valid token is stored.

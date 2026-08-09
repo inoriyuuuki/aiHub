@@ -16,7 +16,7 @@ provider = "openai"
 	managed := map[string]string{
 		"aihub-prof-demo": "command = \"npx\"\nargs = [\"-y\", \"demo\"]\nenv = { KEY = \"v\" }\n",
 	}
-	out, err := mergeManagedTOML([]byte(existing), managed)
+	out, err := mergeManagedTOML([]byte(existing), managed, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ command = "old"
 x = 1
 `
 	managed := map[string]string{"aihub-prof-a": "command = \"new\"\n"}
-	out, err := mergeManagedTOML([]byte(existing), managed)
+	out, err := mergeManagedTOML([]byte(existing), managed, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ command = "other"
 `
 	// The name is not in our managed set -> refuse.
 	managed := map[string]string{"aihub-other": "command = \"x\"\n"}
-	if _, err := mergeManagedTOML([]byte(existing), managed); err == nil {
+	if _, err := mergeManagedTOML([]byte(existing), managed, map[string]bool{}); err == nil {
 		t.Fatal("expected conflict error")
 	}
 }

@@ -126,11 +126,15 @@ func dispatchREST(ctx context.Context, client *Client, tool ToolInfo, args map[s
 	case "prompts.write":
 		action, _ := args["action"].(string)
 		slug, _ := args["slug"].(string)
+		catID, err := client.resolveCategoryID(stringArg(args, "category"))
+		if err != nil {
+			return nil, err
+		}
 		switch action {
 		case "create":
 			var out any
 			return out, client.DoJSON("POST", "/api/v1/prompts", map[string]any{
-				"slug": slug, "title": args["title"], "categoryId": 0, "content": args["content"],
+				"slug": slug, "title": args["title"], "categoryId": catID, "content": args["content"],
 			}, &out)
 		case "update":
 			id, err := client.resolvePromptID(slug, "")
@@ -139,7 +143,7 @@ func dispatchREST(ctx context.Context, client *Client, tool ToolInfo, args map[s
 			}
 			var out any
 			return out, client.DoJSON("PATCH", "/api/v1/prompts/"+strconv.FormatInt(id, 10), map[string]any{
-				"slug": slug, "title": args["title"], "categoryId": 0, "content": args["content"],
+				"slug": slug, "title": args["title"], "categoryId": catID, "content": args["content"],
 			}, &out)
 		case "publish":
 			id, err := client.resolvePromptID(slug, "")
@@ -208,10 +212,38 @@ func dispatchREST(ctx context.Context, client *Client, tool ToolInfo, args map[s
 		var out any
 		return out, client.DoJSON("GET", "/api/v1/expert-packs?"+q.Encode(), nil, &out)
 
-	case "experts.write", "experts.delete", "mcp_catalog.read", "mcp_catalog.write", "mcp_catalog.delete":
+	case "mcp_catalog.read":
+		q := url.Values{}
+		if v, ok := args["keyword"].(string); ok && v != "" {
+			q.Set("keyword", v)
+		}
+		q.Set("page", strconv.Itoa(intArg(args, "page", 1)))
+		q.Set("pageSize", strconv.Itoa(intArg(args, "pageSize", 20)))
+		var out any
+		return out, client.DoJSON("GET", "/api/v1/mcp/definitions?"+q.Encode(), nil, &out)
+	case "experts.write", "experts.delete", "mcp_catalog.write", "mcp_catalog.delete":
 		return nil, fmt.Errorf("工具 %s 请在 Web 界面或专用 CLI 命令中使用", tool.Name)
 	}
 	return nil, fmt.Errorf("未知工具: %s", tool.Name)
+}
+
+func (c *Client) resolveCategoryID(slug string) (int64, error) {
+	if slug == "" {
+		return 0, fmt.Errorf("prompts.write 需要 category（分类 slug）")
+	}
+	var out []struct {
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
+	}
+	if err := c.DoJSON("GET", "/api/v1/prompt-categories", nil, &out); err != nil {
+		return 0, err
+	}
+	for _, c := range out {
+		if c.Slug == slug {
+			return c.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("分类 %q 不存在", slug)
 }
 
 func (c *Client) resolvePromptID(slug, project string) (int64, error) {

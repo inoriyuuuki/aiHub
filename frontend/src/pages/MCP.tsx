@@ -43,7 +43,10 @@ export default function MCP() {
 
   async function openProfile(p: MCPProfile) {
     setSelProfile(p)
-    setItems(await api.get(`/api/v1/mcp/profiles/${p.id}/items`))
+    setItems([])
+    try {
+      setItems(await api.get(`/api/v1/mcp/profiles/${p.id}/items`))
+    } catch (err: any) { setMsg(err.message) }
   }
 
   async function addItem() {
@@ -62,6 +65,7 @@ export default function MCP() {
   }
 
   async function publishVersion(defId: number) {
+    if (!defId) { setMsg('请先选择要发布版本的定义'); return }
     try {
       const cfg: Record<string, any> = {}
       if (newVer.command) cfg.command = newVer.command

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // MCPInstallManifest is the Codex install manifest from the server.
@@ -42,7 +44,7 @@ type SecretSource interface {
 	Prompt(name, description string) (string, error)
 }
 
-// StdinSecretSource prompts on stdin.
+// StdinSecretSource prompts on stdin with echo disabled when possible.
 type StdinSecretSource struct{}
 
 func (StdinSecretSource) Prompt(name, description string) (string, error) {
@@ -50,6 +52,14 @@ func (StdinSecretSource) Prompt(name, description string) (string, error) {
 		fmt.Printf("%s（%s）: ", name, description)
 	} else {
 		fmt.Printf("%s: ", name)
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
 	}
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
@@ -79,12 +89,9 @@ func InstallProfile(dirs *CodexDirs, scope string, manifest *MCPInstallManifest,
 
 	// Build new sections.
 	sections := map[string]string{}
-	var newNames []string
 	for _, srv := range manifest.MCPServers {
 		name := fmt.Sprintf("aihub-%s-%s", manifest.Profile.Slug, srv.Name)
-		if managedSet[name] {
-			// Re-install/update: allowed, we manage it.
-		} else if existingSection(configFile, name) {
+		if !managedSet[name] && existingSection(configFile, name) {
 			return fmt.Errorf("配置段 [mcp_servers.%s] 已存在且未被 AIHub 管理，拒绝覆盖", name)
 		}
 		body, err := renderServerTOML(srv, secrets)
@@ -92,14 +99,15 @@ func InstallProfile(dirs *CodexDirs, scope string, manifest *MCPInstallManifest,
 			return err
 		}
 		sections[name] = body
-		newNames = append(newNames, name)
 	}
 
 	existing, err := os.ReadFile(configFile)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	merged, err := mergeManagedTOML(existing, sections)
+	// Previously-managed sections (from the marker) stay managed even when the
+	// profile no longer lists them, so stale sections are replaced/removed.
+	merged, err := mergeManagedTOML(existing, sections, managedSet)
 	if err != nil {
 		return err
 	}
@@ -109,24 +117,19 @@ func InstallProfile(dirs *CodexDirs, scope string, manifest *MCPInstallManifest,
 		if err := os.MkdirAll(backupDir, 0o755); err != nil {
 			return err
 		}
-		backup := filepath.Join(backupDir, fmt.Sprintf("config-%d.toml", time.Now().Unix()))
-		if err := os.WriteFile(backup, existing, 0o644); err != nil {
+		backup := filepath.Join(backupDir, fmt.Sprintf("config-%d-%d.toml", time.Now().UnixNano(), time.Now().Unix()))
+		if err := writeFile0600(backup, existing); err != nil {
 			return err
 		}
 	}
-	// Atomic write.
-	tmp := configFile + ".tmp"
-	if err := os.WriteFile(tmp, merged, 0o644); err != nil {
+	if err := atomicWrite0600(configFile, merged); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, configFile); err != nil {
-		return err
-	}
-	// Update marker.
+	// Update marker with the full current set.
 	all := append([]string{}, managed...)
-	for _, n := range newNames {
-		if !managedSet[n] {
-			all = append(all, n)
+	for name := range sections {
+		if !managedSet[name] {
+			all = append(all, name)
 		}
 	}
 	return writeManagedSections(codexDir, all)
@@ -170,7 +173,16 @@ func RemoveProfile(dirs *CodexDirs, scope, profileSlug string) error {
 		}
 		out = append(out, line)
 	}
-	if err := os.WriteFile(configFile, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+	// Backup before the destructive edit.
+	backupDir := dirs.BackupsDir(scope)
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return err
+	}
+	backup := filepath.Join(backupDir, fmt.Sprintf("config-remove-%d-%d.toml", time.Now().UnixNano(), time.Now().Unix()))
+	if err := writeFile0600(backup, existing); err != nil {
+		return err
+	}
+	if err := atomicWrite0600(configFile, []byte(strings.Join(out, "\n"))); err != nil {
 		return err
 	}
 	return writeManagedSections(codexDir, remaining)
@@ -217,7 +229,7 @@ func renderServerTOML(srv MCPInstallServer, secrets SecretSource) (string, error
 				}
 				value = v
 			}
-			entries = append(entries, fmt.Sprintf("%s = %q", tomlKey(name), value))
+			entries = append(entries, tomlKey(name)+" = "+tomlQuote(value))
 		}
 		if len(entries) > 0 {
 			b.WriteString("env = { " + strings.Join(entries, ", ") + " }\n")

@@ -18,7 +18,8 @@
 | prompts | `/prompt-categories`（含 `/schemas`），`/prompts`（含 `/publish`、`/versions/{v}`、`/versions/{v}/diff`、`/rollback`、`/render`、`/resolve?slug=`），`/assets/presign|confirm|{id}/url` |
 | skills | `/skills`，`/skills/upload`，`/skills/{id}/versions`，`/skills/install-manifest?slug=`，`/skills/resolve?slug=` |
 | experts | `/expert-packs`（含 `/members`、`/build`、`/versions`、`/install-manifest`） |
-| mcp_catalog | `/mcp/definitions`，`/mcp/profiles`，`/mcp/install-manifest?profile=`，`/mcp/tools` |
+| mcp_catalog | `/mcp/definitions`，`/mcp/profiles`，`/mcp/install-manifest?profile=` |
+| 全局 | `/mcp/tools`（工具清单，服务端全局注册） |
 
 ## 错误码
 | HTTP | code | 说明 |

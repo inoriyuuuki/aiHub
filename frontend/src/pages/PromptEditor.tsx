@@ -56,7 +56,7 @@ export default function PromptEditor() {
           setSlug(p.slug)
           setTitle(p.title)
           setDescription(p.description)
-          if (p.draft) setForm(p.draft.content || {})
+          if (p.draft?.content) setForm(p.draft.content)
           const cat = cs.find((c) => c.id === p.categoryId)
           if (cat?.schema) setSchema(cat.schema.schema as Schema)
         }).catch(() => {})
@@ -65,26 +65,25 @@ export default function PromptEditor() {
     })
   }, [promptId, loadCats])
 
-  async function pickCategory(cid: number) {
-    setCategoryId(cid)
+  function pickCategory(cid: number) {
     const c = cats.find((x) => x.id === cid)
-    if (c?.schema) {
-      setSchema(c.schema.schema as Schema)
-      setForm(defaults(c.schema.schema as Schema))
-    }
+    if (cid !== 0 && !c) return
+    setCategoryId(cid)
+    setSchema((c?.schema?.schema as Schema | undefined) ?? null)
+    setForm(c?.schema ? defaults(c.schema.schema as Schema) : {})
   }
 
   function setPath(obj: Record<string, any>, path: string[], value: any) {
-    const next = { ...obj }
-    let cur = next
-    for (let i = 0; i < path.length - 1; i++) {
-      const key = path[i]
-      if (typeof cur[key] !== 'object' || cur[key] === null) cur[key] = {}
-      cur = cur[key]
-    }
-    cur[path[path.length - 1]] = value
-    return next
+    if (path.length === 0) return typeof value === 'function' ? value(obj) : value
+    const [head, ...rest] = path
+    const base: any = Array.isArray(obj) ? [...obj] : { ...obj }
+    const cur = base[head]
+    base[head] = rest.length === 0
+      ? (typeof value === 'function' ? value(cur) : value)
+      : setPath(cur ?? (isNum(rest[0]) ? [] : {}), rest, value)
+    return base
   }
+  function isNum(s: string): boolean { return /^\d+$/.test(s) }
 
   async function saveDraft() {
     if (!categoryId || !slug || !title) { setMsg('请填写分类、slug 和标题'); return }
@@ -104,11 +103,23 @@ export default function PromptEditor() {
   }
 
   async function publish() {
-    if (!promptId) { await saveDraft(); return }
+    let id = promptId
+    if (!id) {
+      // Create the draft first, then publish it.
+      if (!categoryId || !slug || !title) { setMsg('请填写分类、slug 和标题'); return }
+      try {
+        const created = await api.post<Prompt>('/api/v1/prompts', {
+          categoryId, slug, title, description, content: form, summary,
+        })
+        id = created.id
+        setPrompt(created)
+        nav(`/prompts/${id}`, { replace: true })
+      } catch (err: any) { setMsg(err.message); return }
+    }
     try {
-      const p = await api.post<Prompt>(`/api/v1/prompts/${promptId}/publish`, { summary })
+      const p = await api.post<Prompt>(`/api/v1/prompts/${id}/publish`, { summary })
       setPrompt(p)
-      setVersions(await api.get<PromptVersion[]>(`/api/v1/prompts/${promptId}/versions`))
+      setVersions(await api.get<PromptVersion[]>(`/api/v1/prompts/${id}/versions`))
       setMsg('已发布新版本')
     } catch (err: any) { setMsg(err.message) }
   }
@@ -321,7 +332,7 @@ function Field({ name, prop, value, path, setValue, promptId, depth = 0 }: {
   )
 }
 
-function AssetField({ name, label, value, path, setValue, promptId, kind }: {
+function AssetField({ name: _name, label, value, path, setValue, promptId, kind }: {
   name: string
   label: string
   value: any
@@ -363,10 +374,10 @@ function AssetField({ name, label, value, path, setValue, promptId, kind }: {
         refId: promptId,
       })
       const idStr = String(conf.id)
-      if (path[path.length - 1] === name && kind === 'image') {
-        // single image field -> keep as scalar; we model as array everywhere
-      }
-      setValue(path, [...arr, idStr])
+      setValue(path, (prev: any) => {
+        const cur: any[] = Array.isArray(prev) ? prev.map(String) : prev ? [String(prev)] : []
+        return [...cur, idStr]
+      })
     } catch (err: any) {
       alert('上传失败: ' + err.message)
     } finally {
@@ -380,7 +391,7 @@ function AssetField({ name, label, value, path, setValue, promptId, kind }: {
       <label>{label}</label>
       <div className="asset-list">
         {arr.map((id, i) => <AssetThumb key={id + i} assetId={Number(id)} onRemove={() => setValue(path, arr.filter((_, j) => j !== i))} />)}
-        <input ref={fileRef} type="file" accept={kind === 'image' ? 'image/*' : undefined} onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+        <input ref={fileRef} type="file" disabled={busy} accept={kind === 'image' ? 'image/*' : undefined} onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
       </div>
       {busy && <div className="muted">上传中…</div>}
     </div>

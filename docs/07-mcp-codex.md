@@ -7,7 +7,7 @@
 - 删除（需 `delete` 或 `<group>.delete` scope，默认关闭）：`prompts.delete`、`skills.delete`、`experts.delete`、`mcp_catalog.delete`。
 
 ## 传输
-- **Streamable HTTP**：`POST /mcp`，Bearer Token；`AuthenticateMCP` 要求 Token 至少具备 `read`/`mcp`/`mcp.read` 或任意 `*.read` scope。写工具是否可见取决于 Token scope。
+- **Streamable HTTP**：`POST /mcp`，Bearer Token；`AuthenticateMCP` 要求 Token 至少具备 `read`/`mcp`/`mcp.read` 或任意 `*.read` scope。写工具是否可见取决于 Token scope；删除工具只对具备 `delete`/`<group>.delete` scope 的 Token 可见。
 - **stdio**：`aihub mcp serve` 使用 CLI 本地凭据（Token scope 同样决定写工具可见性），工具实现桥接到 REST API。
 
 ## 第三方 MCP 目录

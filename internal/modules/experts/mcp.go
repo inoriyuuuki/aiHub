@@ -53,7 +53,7 @@ func (s *Service) mcpTools() []mcpx.ToolDef {
 				},
 				"required": []any{"slug"},
 			},
-			Write:   true,
+			Write:   false,
 			Delete:  true,
 			Group:   "experts",
 			Handler: s.mcpDeleteExpert,
@@ -171,7 +171,7 @@ func (s *Service) mcpWriteExpert(ctx context.Context, args map[string]any) (any,
 		if err := s.db.QueryRow(ctx, `SELECT id FROM expert_packs WHERE slug=$1`, slug).Scan(&id); err != nil {
 			return nil, httpx.ErrNotFound("专家包不存在: " + slug)
 		}
-		return s.buildPack(ctx, id)
+		return s.buildPack(ctx, id, "")
 	}
 	return nil, httpx.ErrUnprocessable("未知 action")
 }

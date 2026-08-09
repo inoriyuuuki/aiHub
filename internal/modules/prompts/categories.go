@@ -8,6 +8,7 @@ import (
 
 	"github.com/aihub/aihub/internal/platform/db"
 	"github.com/aihub/aihub/internal/platform/httpx"
+	"github.com/aihub/aihub/internal/platform/slug"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -81,6 +82,10 @@ func (s *Service) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Name == "" || in.Slug == "" {
 		httpx.WriteError(w, httpx.ErrUnprocessable("名称和 slug 不能为空"))
+		return
+	}
+	if !slug.Valid(in.Slug) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _"))
 		return
 	}
 	sortOrder := 0

@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// maxRateKeys bounds the in-memory attempt map to prevent memory exhaustion.
+const maxRateKeys = 100000
+
 // rateLimiter is a simple in-memory sliding-window limiter keyed by address.
 type rateLimiter struct {
 	mu       sync.Mutex
@@ -32,6 +35,22 @@ func (l *rateLimiter) allow(key string) bool {
 	if len(recent) >= l.max {
 		l.attempts[key] = recent
 		return false
+	}
+	// Opportunistic sweep: keep the map bounded.
+	if len(l.attempts) >= maxRateKeys {
+		for k, times := range l.attempts {
+			cut := times[:0]
+			for _, t := range times {
+				if t.After(cutoff) {
+					cut = append(cut, t)
+				}
+			}
+			if len(cut) == 0 {
+				delete(l.attempts, k)
+			} else {
+				l.attempts[k] = cut
+			}
+		}
 	}
 	l.attempts[key] = append(recent, now)
 	return true

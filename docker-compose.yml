@@ -28,6 +28,7 @@ services:
       retries: 20
 
   aihub:
+    image: aihub/aihub:latest
     build: .
     ports:
       - "8080:8080"

@@ -76,22 +76,19 @@ func (r *Registry) Get(name string) (ToolDef, bool) {
 // ScopesAllowed decides whether write/delete tools are visible for a scope set.
 // Scopes come from API tokens. The special scopes "write" and "delete" enable
 // all write/delete tools; module-level scopes like "prompts.write" enable the
-// corresponding group's tools.
+// corresponding group's tools. Delete tools never accept a write-only token.
 func ScopesAllowed(scopes []string, group string, write, delete bool) bool {
 	set := map[string]bool{}
 	for _, s := range scopes {
 		set[s] = true
 	}
-	if write && (set["write"] || set[group+".write"]) {
-		return true
-	}
 	if delete && (set["delete"] || set[group+".delete"]) {
 		return true
 	}
-	if !write && !delete {
-		return true // read tools are always allowed
+	if write && (set["write"] || set[group+".write"]) {
+		return true
 	}
-	return false
+	return !write && !delete // read tools are always allowed
 }
 
 // Log is a small helper for structured tool errors.

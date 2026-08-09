@@ -27,9 +27,12 @@ func tomlTableName(line string) (serverName string, subKey string, ok bool) {
 
 // mergeManagedTOML inserts managed MCP server sections while preserving all
 // other content verbatim. managedSections maps section name (e.g.
-// "aihub-profile-def") to the TOML body (without the header). It refuses to
-// overwrite a section with the same name that is not in managedNames.
-func mergeManagedTOML(existing []byte, managedSections map[string]string) ([]byte, error) {
+// "aihub-profile-def") to the TOML body (without the header). previouslyManaged
+// is the set of section names AIHub manages (from the marker file); sections in
+// this set are skipped even if absent from managedSections (stale cleanup).
+// Any other section using the aihub- prefix is treated as an unmanaged
+// conflict and rejected.
+func mergeManagedTOML(existing []byte, managedSections map[string]string, previouslyManaged map[string]bool) ([]byte, error) {
 	lines := strings.Split(string(existing), "\n")
 	out := []string{}
 	inManaged := false
@@ -37,13 +40,14 @@ func mergeManagedTOML(existing []byte, managedSections map[string]string) ([]byt
 		trimmed := strings.TrimSpace(line)
 		isTable := strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")
 		serverName, _, ok := tomlTableName(line)
-		isManaged := ok && managedSections[serverName] != ""
+		isManaged := ok && (managedSections[serverName] != "" || previouslyManaged[serverName])
 		if isTable {
 			inManaged = isManaged
 		}
 		if inManaged {
 			// Our managed sections are always re-appended from managedSections,
-			// so existing occurrences are skipped (this also handles updates).
+			// so existing occurrences are skipped (this also handles updates
+			// and stale cleanup).
 			continue
 		}
 		// Detect conflicts: a section exists with our naming prefix but is not

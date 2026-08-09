@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api, ExpertPack, PageResult, Skill } from '../api'
+import { api, ExpertMember, ExpertPack, PageResult, Skill } from '../api'
 
 export default function Experts() {
   const [packs, setPacks] = useState<PageResult<ExpertPack>>({ items: [], total: 0, page: 1, pageSize: 20 })
   const [skills, setSkills] = useState<Skill[]>([])
   const [sel, setSel] = useState<ExpertPack | null>(null)
-  const [members, setMembers] = useState<any[]>([])
+  const [members, setMembers] = useState<ExpertMember[]>([])
   const [newPack, setNewPack] = useState({ name: '', slug: '', description: '', domain: '', responsibility: '', usage: '' })
   const [addSkillId, setAddSkillId] = useState(0)
   const [msg, setMsg] = useState('')
@@ -29,8 +29,11 @@ export default function Experts() {
 
   async function open(pack: ExpertPack) {
     setSel(pack)
-    const m = await api.get<any[]>('/api/v1/expert-packs/' + pack.id + '/members')
-    setMembers(m)
+    setMembers([])
+    try {
+      const m = await api.get<ExpertMember[]>('/api/v1/expert-packs/' + pack.id + '/members')
+      setMembers(m)
+    } catch (err: any) { setMsg(err.message) }
   }
 
   async function addMember() {
@@ -109,7 +112,7 @@ export default function Experts() {
                 {members.map((m) => (
                   <tr key={m.skillId}>
                     <td>{m.skillSlug}</td><td>v{m.version}</td>
-                    <td className="mono">{m.sha256.slice(0, 12)}…</td>
+                    <td className="mono">{m.sha256 ? m.sha256.slice(0, 12) + '…' : '-'}</td>
                     <td><button className="link danger" onClick={() => removeMember(m.skillId)}>移除</button></td>
                   </tr>
                 ))}

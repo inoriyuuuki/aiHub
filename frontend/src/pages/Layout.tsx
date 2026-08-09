@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { ModuleInfo } from '../api'
+import { api, ModuleInfo } from '../api'
 
 export default function Layout({ user, modules, onLogout, children }: {
   user: { id: number; username: string; isAdmin: boolean }
@@ -20,7 +20,7 @@ export default function Layout({ user, modules, onLogout, children }: {
   ]
 
   async function logout() {
-    try { await apiPost('/api/v1/auth/logout') } catch { /* ignore */ }
+    try { await api.post('/api/v1/auth/logout') } catch { /* ignore */ }
     onLogout()
     nav('/')
   }
@@ -48,12 +48,4 @@ export default function Layout({ user, modules, onLogout, children }: {
       <main className="content">{children}</main>
     </div>
   )
-}
-
-// small local helper to avoid circular import
-async function apiPost(path: string) {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  const m = document.cookie.match(/(?:^|; )aihub_csrf=([^;]*)/)
-  if (m) headers['X-CSRF-Token'] = decodeURIComponent(m[1])
-  await fetch(path, { method: 'POST', headers, credentials: 'same-origin' })
 }

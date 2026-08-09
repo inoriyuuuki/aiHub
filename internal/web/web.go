@@ -3,8 +3,10 @@ package web
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed all:dist
@@ -24,6 +26,15 @@ func Handler() (http.Handler, error) {
 	fileServer := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		// API and MCP paths must never fall back to the SPA shell.
+		if strings.HasPrefix(path, "/api/") || path == "/api" || strings.HasPrefix(path, "/mcp") {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{"code": "not_found", "message": "接口不存在"},
+			})
+			return
+		}
 		if path == "/" {
 			path = "/index.html"
 		}

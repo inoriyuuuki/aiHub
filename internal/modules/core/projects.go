@@ -68,6 +68,7 @@ func (s *Service) HandleListProjects(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	args = append(args, p.PageSize, p.Offset)
 	rows, err := s.db.Query(r.Context(), `
 		SELECT id, name, slug, description, scope, archived, created_at, updated_at
 		FROM projects `+where+` ORDER BY created_at DESC LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)

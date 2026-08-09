@@ -77,7 +77,7 @@ func (s *Service) mcpTools() []mcpx.ToolDef {
 				},
 				"required": []any{"slug"},
 			},
-			Write:   true,
+			Write:   false,
 			Delete:  true,
 			Group:   "prompts",
 			Handler: s.mcpDeletePrompt,

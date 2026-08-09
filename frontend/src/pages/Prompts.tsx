@@ -18,9 +18,9 @@ export default function Prompts() {
 
   useEffect(() => {
     api.get<Category[]>('/api/v1/prompt-categories').then(setCats).catch(() => {})
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => { load() }, [catFilter])
 
   async function addCat(e: React.FormEvent) {
     e.preventDefault()
@@ -39,7 +39,7 @@ export default function Prompts() {
       </div>
       <div className="row gap">
         <input placeholder="搜索关键字" value={keyword} onChange={(e) => setKeyword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} />
-        <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setTimeout(load, 0) }}>
+        <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
           <option value="">全部分类</option>
           {cats.filter((c) => !c.archived).map((c) => <option key={c.id} value={String(c.id)}>{c.icon} {c.name}</option>)}
         </select>

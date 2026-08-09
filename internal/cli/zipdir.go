@@ -67,9 +67,9 @@ func ZipDir(dir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(fh, f)
-		return err
+		_, cerr := io.Copy(fh, f)
+		f.Close()
+		return cerr
 	})
 	if err != nil {
 		return nil, err
@@ -94,13 +94,32 @@ func isExcluded(rel string, rules []ignoreRule, isDir bool) bool {
 			excluded = true
 		}
 	}
-	// Hard excludes override any re-include.
+	// Hard excludes override any re-include and must match at any depth
+	// (e.g. node_modules/ excludes a/b/node_modules/).
 	for _, h := range hardExcludes {
-		if matchPattern(h, rel, isDir) {
+		if matchAnyPrefix(h, rel) {
 			return true
 		}
 	}
 	return excluded
+}
+
+// matchAnyPrefix matches a pattern (with optional trailing "/") against rel and
+// every ancestor prefix, so directory patterns exclude nested occurrences.
+func matchAnyPrefix(pattern, rel string) bool {
+	if matchPattern(pattern, rel, false) {
+		return true
+	}
+	for {
+		i := strings.LastIndex(rel, "/")
+		if i < 0 {
+			return false
+		}
+		rel = rel[:i]
+		if matchPattern(pattern, rel, true) {
+			return true
+		}
+	}
 }
 
 type ignoreRule struct {

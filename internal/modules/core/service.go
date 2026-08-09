@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,21 @@ func NewService(deps *modules.Deps) *Service {
 		log:   deps.Logger,
 		rl:    newRateLimiter(deps.Cfg.LoginMaxAttempts, deps.Cfg.LoginWindow),
 	}
+}
+
+// audit records a lightweight audit-log entry (best effort).
+func (s *Service) audit(ctx context.Context, userID int64, action, resourceType, resourceID string, detail any, ip string) {
+	data, _ := json.Marshal(detail)
+	_, _ = s.db.Exec(ctx,
+		`INSERT INTO audit_log (user_id, action, resource_type, resource_id, detail, ip) VALUES ($1,$2,$3,$4,$5,$6)`,
+		nullableID(userID), action, resourceType, resourceID, data, ip)
+}
+
+func nullableID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 // BootstrapAdmin creates the initial admin account if none exists.

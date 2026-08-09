@@ -8,6 +8,7 @@ admin_password.txt
 
 # Build artifacts
 frontend/node_modules/
+frontend/*.tsbuildinfo
 frontend/dist/
 internal/web/dist/
 dist/

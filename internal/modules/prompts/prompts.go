@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aihub/aihub/internal/platform/httpx"
+	"github.com/aihub/aihub/internal/platform/slug"
 	"github.com/jackc/pgx/v5"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -76,6 +77,8 @@ func (s *Service) handleListPrompts(w http.ResponseWriter, r *http.Request) {
 	}
 	if status := q.Get("status"); status != "" {
 		where += ` AND p.status = ` + arg(status)
+	} else {
+		where += ` AND p.status <> 'archived'`
 	}
 	if pid := q.Get("projectId"); pid != "" {
 		where += ` AND p.project_id = ` + arg(pid)
@@ -177,6 +180,12 @@ func (s *Service) handleGetPromptBySlug(w http.ResponseWriter, r *http.Request) 
 			httpx.JSON(w, http.StatusOK, d)
 			return
 		}
+		if err != pgx.ErrNoRows {
+			httpx.WriteError(w, err)
+			return
+		}
+		httpx.WriteError(w, httpx.ErrNotFound("提示词不存在"))
+		return
 	}
 	err := s.db.QueryRow(ctx, `SELECT id FROM prompts WHERE slug=$1 AND project_id IS NULL AND status <> 'archived'`, slug).Scan(&id)
 	if err == pgx.ErrNoRows {
@@ -363,6 +372,10 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT id FROM prompts WHERE id=$1 FOR UPDATE`, id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 	var nextVer int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(version),0)+1 FROM prompt_versions WHERE prompt_id=$1 AND version>0`, id).Scan(&nextVer); err != nil {
 		httpx.WriteError(w, err)
@@ -377,6 +390,16 @@ func (s *Service) handleRollback(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO prompt_versions (prompt_id, version, content, variables, schema_id, summary)
 		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
 		id, nextVer, src.Content, src.Variables, src.SchemaID, summary).Scan(&verID); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	// Sync the working draft so default renders match the rolled-back version.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO prompt_versions (prompt_id, version, content, variables, schema_id, summary)
+		VALUES ($1,0,$2,$3,$4,'回滚草稿')
+		ON CONFLICT (prompt_id, version) DO UPDATE SET
+			content=EXCLUDED.content, variables=EXCLUDED.variables, schema_id=EXCLUDED.schema_id`,
+		id, src.Content, src.Variables, src.SchemaID); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -466,6 +489,9 @@ func (s *Service) validatePromptInput(r *http.Request, in *promptInput) *httpx.E
 	if in.Slug == "" || in.Title == "" {
 		return httpx.ErrUnprocessable("slug 和 title 不能为空")
 	}
+	if !slug.Valid(in.Slug) {
+		return httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _")
+	}
 	if in.CategoryID <= 0 {
 		return httpx.ErrUnprocessable("categoryId 不能为空")
 	}
@@ -473,32 +499,17 @@ func (s *Service) validatePromptInput(r *http.Request, in *promptInput) *httpx.E
 }
 
 func (s *Service) currentSchemaID(ctx context.Context, categoryID int64) (int64, error) {
+	return s.currentSchemaIDQ(ctx, s.db, categoryID)
+}
+
+func (s *Service) currentSchemaIDQ(ctx context.Context, q querier, categoryID int64) (int64, error) {
 	var id int64
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT id FROM prompt_schemas WHERE category_id=$1 ORDER BY version DESC LIMIT 1`, categoryID).Scan(&id)
 	if err == pgx.ErrNoRows {
 		return 0, fmt.Errorf("分类没有表单 Schema")
 	}
 	return id, err
-}
-
-// validateAndExtract validates draft content and returns used variables.
-func (s *Service) validateAndExtract(in promptInput, schemaID int64) ([]string, *httpx.Error) {
-	if in.Content == nil {
-		return nil, nil
-	}
-	var schema map[string]any
-	if err := s.db.QueryRow(context.Background(), `SELECT schema FROM prompt_schemas WHERE id=$1`, schemaID).Scan(&schema); err != nil {
-		return nil, httpx.WrapError(err)
-	}
-	if err := ValidateContent(schema, in.Content); err != nil {
-		return nil, httpx.ErrUnprocessable("内容校验失败: " + err.Error())
-	}
-	used, err := ValidateVariables(schema, in.Content)
-	if err != nil {
-		return nil, httpx.ErrUnprocessable(err.Error())
-	}
-	return used, nil
 }
 
 func (s *Service) getPrompt(ctx context.Context, id int64) (promptDTO, *httpx.Error) {

@@ -95,6 +95,14 @@ func (e *env) do(t *testing.T, method, path string, body any, token string, want
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	} else if method != http.MethodGet {
+		// Double-submit CSRF for cookie-authenticated mutations.
+		for _, c := range e.client.Jar.Cookies(req.URL) {
+			if c.Name == "aihub_csrf" {
+				req.Header.Set("X-CSRF-Token", c.Value)
+				break
+			}
+		}
 	}
 	resp, err := e.client.Do(req)
 	if err != nil {
@@ -121,6 +129,18 @@ func TestFullFlow(t *testing.T) {
 
 	// Health
 	e.do(t, "GET", "/api/v1/health", nil, "", 200)
+
+	// CSRF: a session-authenticated mutation without the header must be refused.
+	req, _ := http.NewRequest("POST", e.baseURL+"/api/v1/projects", strings.NewReader(`{"name":"X","slug":"csrf-x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403 without CSRF header, got %d", resp.StatusCode)
+	}
 
 	// Modules
 	_, raw := e.do(t, "GET", "/api/v1/modules", nil, "", 200)
@@ -299,6 +319,25 @@ func TestFullFlow(t *testing.T) {
 	if !containsTool(toolsWrite, "prompts.write") {
 		t.Fatal("write token must see write tools")
 	}
+	// A read+write token sees write tools but NOT delete tools (HTTP MCP scope
+	// gating); a write-only token cannot access MCP at all.
+	tokW, _ := e.do(t, "POST", "/api/v1/tokens", map[string]any{"name": "rw", "scopes": []any{"read", "write"}}, "", 201)
+	rw := tokW["data"].(map[string]any)["token"].(string)
+	toolsRW := mcpListTools(t, e, rw)
+	if !containsTool(toolsRW, "prompts.write") {
+		t.Fatal("read+write token must see write tools")
+	}
+	if containsTool(toolsRW, "prompts.delete") || containsTool(toolsRW, "skills.delete") {
+		t.Fatal("read+write token must not see delete tools")
+	}
+	tokWO, _ := e.do(t, "POST", "/api/v1/tokens", map[string]any{"name": "write-only", "scopes": []any{"write"}}, "", 201)
+	writeOnly := tokWO["data"].(map[string]any)["token"].(string)
+	rawWO, _ := mcpRawNoFail(t, e, writeOnly, map[string]any{
+		"jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": map[string]any{},
+	})
+	if rawWO["error"] == nil {
+		t.Fatal("write-only token must be rejected by MCP")
+	}
 	// MCP call a read tool
 	callRes := mcpCallTool(t, e, readToken, "prompts.read", map[string]any{"keyword": "问候"})
 	if !strings.Contains(callRes, "问候") {
@@ -355,6 +394,28 @@ func mcpCallTool(t *testing.T, e *env, token, name string, args map[string]any) 
 	}
 	text := content[0].(map[string]any)["text"].(string)
 	return text
+}
+
+// mcpRawNoFail performs an MCP POST without asserting the status code.
+func mcpRawNoFail(t *testing.T, e *env, token string, payload map[string]any) (map[string]any, []byte) {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", e.baseURL+"/mcp", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return out, raw
 }
 
 func mcpRaw(t *testing.T, e *env, token string, payload map[string]any) map[string]any {
@@ -427,6 +488,12 @@ func uploadSkillExpect(t *testing.T, e *env, zipData []byte, fields map[string]s
 	mw.Close()        //nolint:errcheck
 	req, _ := http.NewRequest("POST", e.baseURL+"/api/v1/skills/upload", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	for _, c := range e.client.Jar.Cookies(req.URL) {
+		if c.Name == "aihub_csrf" {
+			req.Header.Set("X-CSRF-Token", c.Value)
+			break
+		}
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
 		t.Fatal(err)

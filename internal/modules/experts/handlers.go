@@ -17,6 +17,7 @@ import (
 	"github.com/aihub/aihub/internal/expertpack"
 	"github.com/aihub/aihub/internal/platform/db"
 	"github.com/aihub/aihub/internal/platform/httpx"
+	"github.com/aihub/aihub/internal/platform/slug"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -123,6 +124,10 @@ func (s *Service) handleCreatePack(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Name == "" || in.Slug == "" {
 		httpx.WriteError(w, httpx.ErrUnprocessable("名称和 slug 不能为空"))
+		return
+	}
+	if !slug.Valid(in.Slug) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _"))
 		return
 	}
 	var id int64
@@ -241,6 +246,18 @@ func (s *Service) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrUnprocessable("skillId 和 skillVersionId 不能为空"))
 		return
 	}
+	var packStatus string
+	if err := s.db.QueryRow(r.Context(), `SELECT status FROM expert_packs WHERE id=$1`, id).Scan(&packStatus); err == pgx.ErrNoRows {
+		httpx.WriteError(w, httpx.ErrNotFound("专家包不存在"))
+		return
+	} else if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if packStatus == "archived" {
+		httpx.WriteError(w, httpx.ErrConflict("已归档专家包不能修改成员"))
+		return
+	}
 	// Verify the version belongs to the skill and is published.
 	var ver int
 	if err := s.db.QueryRow(r.Context(), `
@@ -312,17 +329,16 @@ func (s *Service) handleBuild(w http.ResponseWriter, r *http.Request) {
 		Changelog string `json:"changelog"`
 	}
 	_ = httpx.DecodeJSON(r, &req)
-	d, aerr := s.buildPack(r.Context(), id)
+	d, aerr := s.buildPack(r.Context(), id, req.Changelog)
 	if aerr != nil {
 		httpx.WriteError(w, aerr)
 		return
 	}
-	_ = req
 	httpx.JSON(w, http.StatusCreated, d)
 }
 
 // buildPack deterministically builds a new expert pack version.
-func (s *Service) buildPack(ctx context.Context, id int64) (packDTO, *httpx.Error) {
+func (s *Service) buildPack(ctx context.Context, id int64, changelog string) (packDTO, *httpx.Error) {
 	var pk packDTO
 	var cur *int64
 	if err := s.db.QueryRow(ctx, `
@@ -393,6 +409,9 @@ func (s *Service) buildPack(ctx context.Context, id int64) (packDTO, *httpx.Erro
 		return pk, httpx.WrapError(err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT id FROM expert_packs WHERE id=$1 FOR UPDATE`, id); err != nil {
+		return pk, httpx.WrapError(err)
+	}
 	var nextVer int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(version),0)+1 FROM expert_pack_versions WHERE pack_id=$1`, id).Scan(&nextVer); err != nil {
 		return pk, httpx.WrapError(err)
@@ -402,8 +421,8 @@ func (s *Service) buildPack(ctx context.Context, id int64) (packDTO, *httpx.Erro
 	var verID int64
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO expert_pack_versions (pack_id, version, manifest, sha256, object_key, size, changelog)
-		VALUES ($1,$2,$3,$4,$5,$6,'') RETURNING id`,
-		id, nextVer, manifestJSON, manifest.Pack.SHA256, key, len(result.Archive)).Scan(&verID); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		id, nextVer, manifestJSON, manifest.Pack.SHA256, key, len(result.Archive), changelog).Scan(&verID); err != nil {
 		return pk, httpx.WrapError(err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE expert_packs SET status='published', current_version_id=$1, updated_at=now() WHERE id=$2`, verID, id); err != nil {

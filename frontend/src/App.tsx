@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { api, ModuleInfo } from './api'
+import { AUTH_EXPIRED_EVENT, ApiError, api, ModuleInfo } from './api'
 import Login from './pages/Login'
 import Layout from './pages/Layout'
 import Dashboard from './pages/Dashboard'
@@ -17,6 +17,8 @@ export default function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    const onAuthExpired = () => setUser(null)
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
     api
       .get<{ id: number; username: string; isAdmin: boolean }>('/api/v1/auth/me')
       .then((u) => {
@@ -24,8 +26,12 @@ export default function App() {
         return api.get<ModuleInfo[]>('/api/v1/modules')
       })
       .then(setModules)
-      .catch(() => setUser(null))
+      .catch((err) => {
+        // Only a genuine 401 means logged out; other errors keep the shell usable.
+        if (err instanceof ApiError && err.status === 401) setUser(null)
+      })
       .finally(() => setLoading(false))
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
   }, [])
 
   if (loading) return <div className="center">加载中…</div>

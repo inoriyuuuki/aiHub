@@ -30,10 +30,11 @@ type createTokenRequest struct {
 
 // createTokenResponse returns the token value exactly once.
 type createTokenResponse struct {
-	ID     int64    `json:"id"`
-	Name   string   `json:"name"`
-	Token  string   `json:"token"`
-	Scopes []string `json:"scopes"`
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	Token     string     `json:"token"`
+	Scopes    []string   `json:"scopes"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // knownScopes is the set of acceptable token scopes.
@@ -46,6 +47,35 @@ var knownScopes = map[string]bool{
 	"mcp_catalog.read": true, "mcp_catalog.write": true, "mcp_catalog.delete": true,
 	"auth.read": true, "auth.write": true,
 	"mcp": true, "mcp.read": true, "mcp.write": true, "mcp.delete": true,
+}
+
+// scopeMintable reports whether a caller with scopes may mint a token with
+// requested scope. A caller holding the generic action scope (write/delete/read)
+// may mint group-specific scopes of the same action; otherwise the requested
+// scope must be held directly.
+func scopeMintable(caller []string, requested string) bool {
+	set := map[string]bool{}
+	for _, c := range caller {
+		set[c] = true
+	}
+	if set[requested] {
+		return true
+	}
+	// requested may be "<group>.<action>"
+	idx := len(requested) - 1
+	for ; idx >= 0; idx-- {
+		if requested[idx] == '.' {
+			break
+		}
+	}
+	if idx > 0 {
+		action := requested[idx+1:]
+		generic := map[string]string{"read": "read", "write": "write", "delete": "delete"}[action]
+		if generic != "" && set[generic] {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleListTokens lists the caller's API tokens.
@@ -93,6 +123,16 @@ func (s *Service) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Tokens cannot escalate beyond their own scopes; sessions may mint any.
+	if httpx.AuthMethod(r.Context()) == "token" {
+		caller := httpx.TokenScopes(r.Context())
+		for _, sc := range req.Scopes {
+			if !scopeMintable(caller, sc) {
+				httpx.WriteError(w, httpx.ErrForbidden("不能授予超出自身范围的 scope: "+sc))
+				return
+			}
+		}
+	}
 	var expires *time.Time
 	if req.TTLHours != nil && *req.TTLHours > 0 {
 		t := time.Now().Add(time.Duration(*req.TTLHours) * time.Hour)
@@ -116,7 +156,8 @@ func (s *Service) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, createTokenResponse{ID: id, Name: req.Name, Token: raw, Scopes: req.Scopes})
+	s.audit(r.Context(), uid, "token_create", "api_token", strconv.FormatInt(id, 10), map[string]any{"name": req.Name, "scopes": req.Scopes}, r.RemoteAddr)
+	httpx.JSON(w, http.StatusCreated, createTokenResponse{ID: id, Name: req.Name, Token: raw, Scopes: req.Scopes, ExpiresAt: expires})
 }
 
 // HandleRevokeToken revokes a token by id.
@@ -133,6 +174,7 @@ func (s *Service) HandleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	s.audit(r.Context(), uid, "token_revoke", "api_token", strconv.FormatInt(id, 10), nil, r.RemoteAddr)
 	if tag.RowsAffected() == 0 {
 		var exists bool
 		_ = s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM api_tokens WHERE id=$1 AND user_id=$2)`, id, uid).Scan(&exists)

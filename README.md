@@ -60,7 +60,7 @@ aihub status
 
 ### MCP
 
-- **HTTP**：`POST /mcp`，`Authorization: Bearer <api-token>`（Token 需要 `mcp` 或 `*.read` 作用域）。
+- **HTTP**：`POST /mcp`，`Authorization: Bearer <api-token>`（Token 需要 `read`/`mcp`/`*.read` 作用域）。
 - **stdio**：`aihub mcp serve`（使用 CLI 已登录凭据）。
 - 写工具（`*.write` / `*.delete`）只有在 Token 具备对应 scope 时才可见。
 

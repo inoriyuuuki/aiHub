@@ -44,6 +44,9 @@ type SkillManifest struct {
 // InstallSkill downloads and installs a skill, atomically replacing any
 // previous managed version (backing it up first).
 func InstallSkill(client *Client, dirs *CodexDirs, scope string, manifest *SkillManifest) error {
+	if err := checkSlug(manifest.Skill.Slug); err != nil {
+		return err
+	}
 	dest := filepath.Join(dirs.SkillsDir(scope), manifest.Skill.Slug)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
@@ -72,21 +75,30 @@ func InstallSkill(client *Client, dirs *CodexDirs, scope string, manifest *Skill
 	if err != nil {
 		return err
 	}
+	if manifest.Version.SHA256 != "" && sha != manifest.Version.SHA256 {
+		return fmt.Errorf("Skill 压缩包 SHA-256 校验失败：期望 %s 实际 %s", manifest.Version.SHA256, sha)
+	}
 	_ = os.Remove(zipPath) // the zip is not part of the installed skill
 	// Normalize: content may live under a root dir.
-	root := filepath.Join(tmp, manifest.Version.RootDir)
-	if _, err := os.Stat(root); err != nil {
-		root = tmp
+	src := tmp
+	if manifest.Version.RootDir != "" {
+		candidate := filepath.Join(tmp, filepath.FromSlash(manifest.Version.RootDir))
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			src = candidate
+		}
 	}
 	marker := managedMarker{
 		Slug: manifest.Skill.Slug, Version: manifest.Version.Version,
 		SHA256: sha, Source: manifest.Source, InstalledAt: time.Now().UTC(),
 	}
 	markerData, _ := json.MarshalIndent(marker, "", "  ")
+	if err := os.WriteFile(filepath.Join(src, ".aihub-managed.json"), markerData, 0o644); err != nil {
+		return err
+	}
 
 	// Backup any existing managed directory.
 	if _, err := os.Stat(dest); err == nil {
-		backup := filepath.Join(dirs.BackupsDir(scope), fmt.Sprintf("%s-%d", manifest.Skill.Slug, time.Now().Unix()))
+		backup := filepath.Join(dirs.BackupsDir(scope), fmt.Sprintf("%s-%d-%d", manifest.Skill.Slug, time.Now().UnixNano(), time.Now().Unix()))
 		if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
 			return err
 		}
@@ -94,21 +106,20 @@ func InstallSkill(client *Client, dirs *CodexDirs, scope string, manifest *Skill
 			return err
 		}
 	}
-	if err := os.Rename(filepath.Join(tmp, "."), dest); err != nil {
+	if err := os.Rename(src, dest); err != nil {
 		// If rename of directory fails (cross-device), fall back to copy.
-		if err := copyDir(tmp, dest); err != nil {
+		if err := copyDir(src, dest); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dest, ".aihub-managed.json"), markerData, 0o644); err != nil {
-		return err
-	}
-	_ = root
 	return nil
 }
 
 // RemoveSkill backs up and removes a managed skill directory.
 func RemoveSkill(dirs *CodexDirs, scope, slug string) error {
+	if err := checkSlug(slug); err != nil {
+		return err
+	}
 	dest := filepath.Join(dirs.SkillsDir(scope), slug)
 	if _, err := os.Stat(dest); err != nil {
 		return fmt.Errorf("Skill %s 未安装", slug)
@@ -116,7 +127,7 @@ func RemoveSkill(dirs *CodexDirs, scope, slug string) error {
 	if _, err := os.Stat(filepath.Join(dest, ".aihub-managed.json")); err != nil {
 		return fmt.Errorf("目录 %s 不是 AIHub 管理的，拒绝删除", dest)
 	}
-	backup := filepath.Join(dirs.BackupsDir(scope), fmt.Sprintf("%s-remove-%d", slug, time.Now().Unix()))
+	backup := filepath.Join(dirs.BackupsDir(scope), fmt.Sprintf("%s-remove-%d-%d", slug, time.Now().UnixNano(), time.Now().Unix()))
 	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
 		return err
 	}
@@ -128,6 +139,9 @@ func RemoveSkill(dirs *CodexDirs, scope, slug string) error {
 
 // RestoreSkill restores the most recent backup of a skill.
 func RestoreSkill(dirs *CodexDirs, scope, slug string) error {
+	if err := checkSlug(slug); err != nil {
+		return err
+	}
 	backupRoot := dirs.BackupsDir(scope)
 	matches, err := filepath.Glob(filepath.Join(backupRoot, slug+"-*"))
 	if err != nil {
@@ -136,30 +150,63 @@ func RestoreSkill(dirs *CodexDirs, scope, slug string) error {
 	if len(matches) == 0 {
 		return fmt.Errorf("没有可恢复的备份")
 	}
-	latest := matches[len(matches)-1]
+	// Prefer install backups over "-remove-" backups; newest first.
+	type cand struct {
+		path   string
+		mod    time.Time
+		remove bool
+	}
+	cands := []cand{}
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		cands = append(cands, cand{m, fi.ModTime(), strings.Contains(filepath.Base(m), "-remove-")})
+	}
+	if len(cands) == 0 {
+		return fmt.Errorf("没有可恢复的备份")
+	}
+	best := cands[0]
+	for _, c := range cands[1:] {
+		if !c.remove && best.remove {
+			best = c
+		} else if c.remove == best.remove && c.mod.After(best.mod) {
+			best = c
+		}
+	}
 	dest := filepath.Join(dirs.SkillsDir(scope), slug)
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("目标目录 %s 已存在", dest)
 	}
-	return os.Rename(latest, dest)
+	return os.Rename(best.path, dest)
 }
 
-// extractZipTo safely extracts a zip into dir, rejecting traversal.
+// extractZipTo safely extracts a zip into dir, rejecting traversal, symlinks
+// and oversized content, and preserving executable bits.
 func extractZipTo(zipPath, dir string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("打开压缩包失败: %w", err)
 	}
 	defer zr.Close()
+	var total int64
 	for _, f := range zr.File {
 		name := strings.ReplaceAll(f.Name, "\\", "/")
 		clean := path.Clean(name)
 		if clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
 			return fmt.Errorf("压缩包包含不安全路径: %s", f.Name)
 		}
+		if f.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("压缩包包含符号链接: %s", f.Name)
+		}
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		if f.UncompressedSize64 > 64<<20 || total+int64(f.UncompressedSize64) > 512<<20 {
+			return fmt.Errorf("压缩包内容超过大小限制: %s", f.Name)
+		}
+		total += int64(f.UncompressedSize64)
 		target := filepath.Join(dir, filepath.FromSlash(clean))
 		if !strings.HasPrefix(target, filepath.Clean(dir)+string(os.PathSeparator)) {
 			return fmt.Errorf("压缩包路径越界: %s", f.Name)
@@ -171,7 +218,11 @@ func extractZipTo(zipPath, dir string) error {
 		if err != nil {
 			return err
 		}
-		out, err := os.Create(target)
+		mode := os.FileMode(0o644)
+		if f.Mode()&0o111 != 0 {
+			mode = 0o755
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 		if err != nil {
 			rc.Close()
 			return err

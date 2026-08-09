@@ -2,6 +2,7 @@ package mcpcat
 
 import (
 	"context"
+	"sort"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -57,7 +58,7 @@ func (s *Service) mcpTools() []mcpx.ToolDef {
 				},
 				"required": []any{"kind", "slug"},
 			},
-			Write:   true,
+			Write:   false,
 			Delete:  true,
 			Group:   "mcp_catalog",
 			Handler: s.mcpDeleteCatalog,
@@ -116,12 +117,18 @@ func (s *Service) mcpReadCatalog(ctx context.Context, args map[string]any) (any,
 			}
 			manifestOut.MCPServers = append(manifestOut.MCPServers, server)
 		}
+		enabledList := make([]string, 0, len(enabledSet))
 		for t := range enabledSet {
-			manifestOut.EnabledTools = append(manifestOut.EnabledTools, t)
+			enabledList = append(enabledList, t)
 		}
+		sort.Strings(enabledList)
+		manifestOut.EnabledTools = enabledList
+		disabledList := make([]string, 0, len(disabledSet))
 		for t := range disabledSet {
-			manifestOut.DisabledTools = append(manifestOut.DisabledTools, t)
+			disabledList = append(disabledList, t)
 		}
+		sort.Strings(disabledList)
+		manifestOut.DisabledTools = disabledList
 		return manifestOut, nil
 	}
 	page, size := 1, 20
@@ -143,29 +150,89 @@ func (s *Service) mcpReadCatalog(ctx context.Context, args map[string]any) (any,
 	if kw, _ := args["keyword"].(string); kw != "" {
 		where += ` AND (name ILIKE ` + arg("%"+kw+"%") + ` OR slug ILIKE ` + arg("%"+kw+"%") + `)`
 	}
-	// Profiles
+	// Both definitions and profiles.
+	defs, dTotal, derr := s.listDefinitionsMCP(ctx, args, page, size)
+	if derr != nil {
+		return nil, derr
+	}
+	profs, pTotal, perr := s.listProfilesMCP(ctx, args, page, size)
+	if perr != nil {
+		return nil, perr
+	}
+	return map[string]any{
+		"definitions": httpx.PageOf(defs, dTotal, httpx.Page{Page: page, PageSize: size}),
+		"profiles":    httpx.PageOf(profs, pTotal, httpx.Page{Page: page, PageSize: size}),
+	}, nil
+}
+
+func (s *Service) listDefinitionsMCP(ctx context.Context, args map[string]any, page, size int) ([]definitionDTO, int, error) {
+	where := `WHERE status <> 'archived'`
+	qargs := []any{}
+	arg := func(v any) string {
+		qargs = append(qargs, v)
+		return "$" + strconv.Itoa(len(qargs))
+	}
+	if kw, _ := args["keyword"].(string); kw != "" {
+		where += ` AND (name ILIKE ` + arg("%"+kw+"%") + ` OR slug ILIKE ` + arg("%"+kw+"%") + `)`
+	}
+	var total int
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM mcp_definitions `+where, qargs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, project_id, name, slug, description, category, tags, transport, status, current_version_id, created_at, updated_at
+		FROM mcp_definitions `+where+` ORDER BY updated_at DESC LIMIT `+arg(size)+` OFFSET `+arg((page-1)*size), qargs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := []definitionDTO{}
+	for rows.Next() {
+		var d definitionDTO
+		var cur *int64
+		if err := rows.Scan(&d.ID, &d.ProjectID, &d.Name, &d.Slug, &d.Description, &d.Category, &d.Tags, &d.Transport, &d.Status, &cur, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		if cur != nil {
+			if v, err := s.getDefVersion(ctx, d.ID, *cur); err == nil {
+				d.CurrentVersion = v
+			}
+		}
+		items = append(items, d)
+	}
+	return items, total, nil
+}
+
+func (s *Service) listProfilesMCP(ctx context.Context, args map[string]any, page, size int) ([]profileDTO, int, error) {
+	where := `WHERE status <> 'archived'`
+	qargs := []any{}
+	arg := func(v any) string {
+		qargs = append(qargs, v)
+		return "$" + strconv.Itoa(len(qargs))
+	}
+	if kw, _ := args["keyword"].(string); kw != "" {
+		where += ` AND (name ILIKE ` + arg("%"+kw+"%") + ` OR slug ILIKE ` + arg("%"+kw+"%") + `)`
+	}
 	var total int
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM mcp_profiles `+where, qargs...).Scan(&total); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	qargs2 := append([]any{}, qargs...)
-	qargs2 = append(qargs2, size, (page-1)*size)
 	rows, err := s.db.Query(ctx, `
 		SELECT id, name, slug, description, scope, project_id, status, created_at, updated_at
-		FROM mcp_profiles `+where+` ORDER BY updated_at DESC LIMIT `+arg(size)+` OFFSET `+arg((page-1)*size), qargs2...)
+		FROM mcp_profiles `+where+` ORDER BY updated_at DESC LIMIT `+arg(size)+` OFFSET `+arg((page-1)*size), qargs...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	items := []profileDTO{}
 	for rows.Next() {
 		var d profileDTO
 		if err := rows.Scan(&d.ID, &d.Name, &d.Slug, &d.Description, &d.Scope, &d.ProjectID, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		items = append(items, d)
 	}
-	return httpx.PageOf(items, total, httpx.Page{Page: page, PageSize: size}), nil
+	return items, total, nil
 }
 
 func (s *Service) mcpWriteCatalog(ctx context.Context, args map[string]any) (any, error) {

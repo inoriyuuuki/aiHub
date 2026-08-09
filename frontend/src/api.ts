@@ -6,6 +6,13 @@ function readCookie(name: string): string {
   return m ? decodeURIComponent(m[1]) : ''
 }
 
+// Emitted when the server rejects with 401 so the app can redirect to login.
+export const AUTH_EXPIRED_EVENT = 'aihub:auth-expired'
+
+function emitAuthExpired() {
+  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+}
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -16,18 +23,30 @@ export class ApiError extends Error {
   }
 }
 
+export function csrfToken(): string {
+  return readCookie(CSRF_COOKIE)
+}
+
+// requestCore performs a fetch with credentials + CSRF and returns the raw
+// Response. Used by request() and by callers needing custom bodies (multipart).
+export async function requestCore(method: string, path: string, headers: Record<string, string>, body?: BodyInit): Promise<Response> {
+  const h: Record<string, string> = { Accept: 'application/json', ...headers }
+  const csrf = csrfToken()
+  if (csrf) h['X-CSRF-Token'] = csrf
+  return fetch(path, { method, headers: h, body, credentials: 'same-origin' })
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
+  const headers: Record<string, string> = {}
   let payload: string | undefined
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
     payload = JSON.stringify(body)
   }
-  const csrf = readCookie(CSRF_COOKIE)
-  if (csrf) headers['X-CSRF-Token'] = csrf
-  const resp = await fetch(path, { method, headers, body: payload, credentials: 'same-origin' })
+  const resp = await requestCore(method, path, headers, payload)
   const data = await resp.json().catch(() => ({}))
   if (!resp.ok) {
+    if (resp.status === 401) emitAuthExpired()
     const err = data?.error
     throw new ApiError(resp.status, err?.code || 'error', err?.message || `请求失败 (${resp.status})`)
   }
@@ -130,9 +149,20 @@ export interface ExpertPack {
   responsibility: string
   usage: string
   status: string
-  currentVersion?: any
+  currentVersion?: { version: number; sha256: string }
   createdAt: string
   updatedAt: string
+}
+
+export interface ExpertMember {
+  skillId: number
+  skillSlug: string
+  skillName: string
+  skillVersionId: number
+  version: number
+  sha256: string
+  description: string
+  installOrder: number
 }
 
 export interface MCPDefinition {

@@ -125,6 +125,10 @@ func (c *Client) doRaw(method, path string, body io.Reader, contentType string) 
 // session, and stores it in the CLI config.
 func (c *Client) Login(serverURL, username, password string, ttlHours int) (*Config, error) {
 	base := strings.TrimRight(serverURL, "/")
+	if !strings.HasPrefix(base, "https://") && !isLocalHost(base) {
+		fmt.Fprintln(os.Stderr, "警告：正在通过未加密的 HTTP 连接登录，密码与 Token 可能被窃听；建议使用 HTTPS")
+	}
+
 	httpc := &http.Client{Timeout: 30 * time.Second, Jar: newCookieJar()}
 	loginBody, _ := json.Marshal(map[string]string{"username": username, "password": password})
 	resp, err := httpc.Post(base+"/api/v1/auth/login", "application/json", bytes.NewReader(loginBody))
@@ -145,6 +149,11 @@ func (c *Client) Login(serverURL, username, password string, ttlHours int) (*Con
 	tb, _ := json.Marshal(tokenReq)
 	req, _ := http.NewRequest("POST", base+"/api/v1/tokens", bytes.NewReader(tb))
 	req.Header.Set("Content-Type", "application/json")
+	// Double-submit CSRF: the session cookie is accompanied by a readable
+	// aihub_csrf cookie which the server requires on state-changing requests.
+	if csrf := readCookieFromJar(httpc.Jar, base, "aihub_csrf"); csrf != "" {
+		req.Header.Set("X-CSRF-Token", csrf)
+	}
 	tresp, err := httpc.Do(req)
 	if err != nil {
 		return nil, err
@@ -156,17 +165,18 @@ func (c *Client) Login(serverURL, username, password string, ttlHours int) (*Con
 	}
 	var tokenResp struct {
 		Data struct {
-			Token  string   `json:"token"`
-			Scopes []string `json:"scopes"`
+			ID        int64      `json:"id"`
+			Token     string     `json:"token"`
+			Scopes    []string   `json:"scopes"`
+			ExpiresAt *time.Time `json:"expiresAt"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &tokenResp); err != nil {
 		return nil, fmt.Errorf("解析 Token 响应失败")
 	}
-	cfg := &Config{ServerURL: base, Username: username, Token: tokenResp.Data.Token, Scopes: tokenResp.Data.Scopes, TokenCreated: time.Now()}
-	if ttlHours > 0 {
-		t := time.Now().Add(time.Duration(ttlHours) * time.Hour)
-		cfg.TokenExpires = &t
+	cfg := &Config{ServerURL: base, Username: username, Token: tokenResp.Data.Token, TokenID: tokenResp.Data.ID, Scopes: tokenResp.Data.Scopes, TokenCreated: time.Now()}
+	if tokenResp.Data.ExpiresAt != nil {
+		cfg.TokenExpires = tokenResp.Data.ExpiresAt
 	}
 	if err := cfg.Save(); err != nil {
 		return nil, err
@@ -262,4 +272,26 @@ func (j *memJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 }
 func (j *memJar) Cookies(u *url.URL) []*http.Cookie {
 	return j.cookies[u.Host]
+}
+
+func isLocalHost(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || strings.HasPrefix(h, "192.168.") || strings.HasPrefix(h, "10.")
+}
+
+func readCookieFromJar(jar http.CookieJar, base, name string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	for _, c := range jar.Cookies(u) {
+		if c.Name == name {
+			return c.Value
+		}
+	}
+	return ""
 }

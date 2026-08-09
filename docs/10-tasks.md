@@ -47,6 +47,16 @@
 - [x] aihub mcp serve stdio endpoint
 - [x] REST/stdio/HTTP 结果与权限一致性验证
 
+## 评审修复（多子代理 review 后）
+- [x] MCP 删除工具不再被 write 作用域放行；Token 不能越权铸造更高 scope
+- [x] CSRF 双提交校验实际生效（Cookie + X-CSRF-Token）
+- [x] 附件上传：MIME 白名单补全 effect-file、魔数嗅探、objectKey 绑定、SVG 从图片白名单移除
+- [x] 登录限流 map 有界 + 未知用户等时返回；Session 定期清理；HTTP 超时补齐
+- [x] GET /projects 分页参数修复；createPrompt 事务化；版本号加锁（FOR UPDATE）
+- [x] 归档语义统一（已归档资源拒绝写操作）；回滚同步草稿；分类-项目范围校验
+- [x] slug 服务端/CLI 双端校验（防路径穿越）；CLI 下载包 SHA-256 校验
+- [x] CLI：配置/备份 0600、RemoveProfile 原子+备份、嵌套排除、logout 撤销 Token、stdin 不回显、TOML 安全转义
+
 ## 阶段 7：交付与发布
 - [x] 多阶段 Dockerfile
 - [x] Docker Compose + 健康检查 + 持久卷

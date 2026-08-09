@@ -14,6 +14,7 @@ import (
 
 	"github.com/aihub/aihub/internal/platform/db"
 	"github.com/aihub/aihub/internal/platform/httpx"
+	"github.com/aihub/aihub/internal/platform/slug"
 	"github.com/aihub/aihub/internal/skillpack"
 	"github.com/jackc/pgx/v5"
 )
@@ -128,6 +129,10 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Slug == "" {
 		req.Slug = slugify(meta.Name)
+	}
+	if !slug.Valid(req.Slug) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _"))
+		return
 	}
 	if req.Name == "" {
 		req.Name = meta.Name
@@ -286,11 +291,16 @@ func (s *Service) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var curSlug string
-	if err := s.db.QueryRow(r.Context(), `SELECT slug FROM skills WHERE id=$1`, id).Scan(&curSlug); err == pgx.ErrNoRows {
+	var curStatus string
+	if err := s.db.QueryRow(r.Context(), `SELECT slug, status FROM skills WHERE id=$1`, id).Scan(&curSlug, &curStatus); err == pgx.ErrNoRows {
 		httpx.WriteError(w, httpx.ErrNotFound("Skill 不存在"))
 		return
 	} else if err != nil {
 		httpx.WriteError(w, err)
+		return
+	}
+	if curStatus == "archived" {
+		httpx.WriteError(w, httpx.ErrConflict("已归档 Skill 不能发布新版本"))
 		return
 	}
 	sha := sha256.Sum256(req.Data)
@@ -305,6 +315,10 @@ func (s *Service) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
+	if _, err := tx.Exec(r.Context(), `SELECT id FROM skills WHERE id=$1 FOR UPDATE`, id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 	var nextVer int
 	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(version),0)+1 FROM skill_versions WHERE skill_id=$1`, id).Scan(&nextVer); err != nil {
 		httpx.WriteError(w, err)
@@ -431,7 +445,7 @@ func (s *Service) resolveSkill(ctx context.Context, slug, project string) (skill
 		query += ` AND pr.slug = $2`
 		args = append(args, project)
 	}
-	query += ` ORDER BY (sk.project_id IS NOT NULL) DESC LIMIT 1`
+	query += ` ORDER BY (sk.project_id IS NOT NULL) DESC, sk.id LIMIT 1`
 
 	var d skillDTO
 	var cur *int64

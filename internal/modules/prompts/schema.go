@@ -129,18 +129,32 @@ func SchemaVars(schema map[string]any) []map[string]any {
 	return out
 }
 
-// ValidateContent checks content against the schema's constraints.
+// ValidateContent checks content against the schema's constraints, including
+// the top-level "required" array.
 func ValidateContent(schema, content map[string]any) error {
 	props, _ := schema["properties"].(map[string]any)
 	if props == nil {
 		return fmt.Errorf("schema 无效")
 	}
-	return validateObjectContent(props, content, "")
+	return validateObjectContent(props, content, "", requiredList(schema))
 }
 
-func validateObjectContent(props map[string]any, content map[string]any, path string) error {
-	// required check
-	if err := checkRequired(props, content, path); err != nil {
+// requiredList extracts the "required" string array of a schema object.
+func requiredList(schema map[string]any) map[string]bool {
+	out := map[string]bool{}
+	if reqs, ok := schema["required"].([]any); ok {
+		for _, r := range reqs {
+			if name, ok := r.(string); ok && name != "" {
+				out[name] = true
+			}
+		}
+	}
+	return out
+}
+
+func validateObjectContent(props map[string]any, content map[string]any, path string, required map[string]bool) error {
+	// required check (top-level array + per-property boolean)
+	if err := checkRequired(props, content, path, required); err != nil {
 		return err
 	}
 	for name, raw := range props {
@@ -185,7 +199,7 @@ func validateObjectContent(props map[string]any, content map[string]any, path st
 						if !ok {
 							return fmt.Errorf("%s%s[%d] 必须是对象", path, name, i)
 						}
-						if err := validateObjectContent(iprops, obj, fmt.Sprintf("%s%s[%d].", path, name, i)); err != nil {
+						if err := validateObjectContent(iprops, obj, fmt.Sprintf("%s%s[%d].", path, name, i), requiredList(items)); err != nil {
 							return err
 						}
 					}
@@ -203,7 +217,7 @@ func validateObjectContent(props map[string]any, content map[string]any, path st
 				return fmt.Errorf("%s%s 必须是对象", path, name)
 			}
 			if iprops, ok := p["properties"].(map[string]any); ok {
-				if err := validateObjectContent(iprops, obj, path+name+"."); err != nil {
+				if err := validateObjectContent(iprops, obj, path+name+".", requiredList(p)); err != nil {
 					return err
 				}
 			}
@@ -212,14 +226,19 @@ func validateObjectContent(props map[string]any, content map[string]any, path st
 	return nil
 }
 
-func checkRequired(props, content map[string]any, path string) error {
+func checkRequired(props, content map[string]any, path string, required map[string]bool) error {
 	for name, raw := range props {
 		p, _ := raw.(map[string]any)
-		if req, _ := p["required"].(bool); req {
-			v, ok := content[name]
-			if !ok || v == nil || v == "" || v == false {
-				return fmt.Errorf("%s%s 为必填", path, name)
-			}
+		req := required[name]
+		if b, _ := p["required"].(bool); b {
+			req = true
+		}
+		if !req {
+			continue
+		}
+		v, ok := content[name]
+		if !ok || v == nil {
+			return fmt.Errorf("%s%s 为必填", path, name)
 		}
 	}
 	return nil

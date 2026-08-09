@@ -35,7 +35,16 @@ func BuildServer(reg *Registry, scopes []string, logger *slog.Logger) *mcp.Serve
 }
 
 func toolHandler(t *ToolDef, logger *slog.Logger) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, err error) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				if logger != nil {
+					logger.Error("mcp tool panic", "tool", t.Name, "panic", rec)
+				}
+				res = textResult("工具内部错误", true)
+				err = nil
+			}
+		}()
 		args := map[string]any{}
 		if err := JSONArgs(req.Params.Arguments, &args); err != nil {
 			return textResult("参数解析失败: "+err.Error(), true), nil
@@ -78,7 +87,10 @@ func NewStreamableHTTPHandler(reg *Registry, auth Authenticator, logger *slog.Lo
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scopes, err := auth.AuthenticateMCP(r)
 		if err != nil {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="aihub"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32001,"message":"unauthorized"},"id":null}`))
 			return
 		}
 		inner.ServeHTTP(w, r.WithContext(withScopes(r.Context(), scopes)))

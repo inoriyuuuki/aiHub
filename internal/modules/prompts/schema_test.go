@@ -64,6 +64,42 @@ func TestValidateContent(t *testing.T) {
 	}
 }
 
+func TestValidateContentEnforcesTopLevelRequired(t *testing.T) {
+	s := map[string]any{
+		"type":     "object",
+		"required": []any{"title", "messages"},
+		"properties": map[string]any{
+			"title":    map[string]any{"type": "string"},
+			"messages": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		},
+	}
+	if err := ValidateContent(s, map[string]any{"title": "x"}); err == nil {
+		t.Fatal("expected missing required field error")
+	}
+	if err := ValidateContent(s, map[string]any{"title": "x", "messages": []any{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	// nested repeatable-group required array
+	s2 := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"items": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":     "object",
+					"required": []any{"role"},
+					"properties": map[string]any{
+						"role": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateContent(s2, map[string]any{"items": []any{map[string]any{}}}); err == nil {
+		t.Fatal("expected nested required error")
+	}
+}
+
 func TestValidateVariables(t *testing.T) {
 	s := chatSchema()
 	content := map[string]any{"title": "关于 {{topic}} 的讨论"}

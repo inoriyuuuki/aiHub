@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aihub/aihub/internal/platform/httpx"
@@ -53,6 +54,7 @@ func (s *Service) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rl.reset(key)
+	s.audit(ctx, u.ID, "login", "auth", "", nil, r.RemoteAddr)
 
 	raw, err := security.RandomToken(32)
 	if err != nil {
@@ -72,7 +74,7 @@ func (s *Service) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	secure := r.TLS != nil || s.cfg.PublicBaseURL != ""
+	secure := r.TLS != nil || strings.HasPrefix(s.cfg.PublicBaseURL, "https://")
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieSession, Value: raw, Path: "/", Expires: expires,
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
@@ -165,6 +167,7 @@ func (s *Service) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	s.audit(r.Context(), u.ID, "password_change", "auth", "", nil, r.RemoteAddr)
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -184,12 +187,17 @@ type userRow struct {
 	IsAdmin      bool
 }
 
+// dummyHash is used to equalize login timing for unknown usernames.
+var dummyHash, _ = security.HashPassword("dummy-password-for-timing")
+
 func (s *Service) verifyCredentials(ctx context.Context, username, password string) (userRow, error) {
 	var u userRow
 	err := s.db.QueryRow(ctx,
 		`SELECT id, username, password_hash, is_admin FROM users WHERE username=$1`, username).
 		Scan(&u.ID, &u.Username, &u.PasswordHash, &u.IsAdmin)
 	if err != nil {
+		// Run a dummy argon2 verify so unknown users take the same time.
+		_, _ = security.VerifyPassword(dummyHash, password)
 		return u, errors.New("invalid credentials")
 	}
 	ok, err := security.VerifyPassword(u.PasswordHash, password)

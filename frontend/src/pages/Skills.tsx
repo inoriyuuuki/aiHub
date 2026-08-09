@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, PageResult, Skill } from '../api'
+import { api, PageResult, Skill, csrfToken } from '../api'
 
 export default function Skills() {
   const [skills, setSkills] = useState<PageResult<Skill>>({ items: [], total: 0, page: 1, pageSize: 20 })
@@ -21,8 +21,11 @@ export default function Skills() {
     fd.append('file', f)
     for (const [k, v] of Object.entries(meta)) if (v) fd.append(k, v)
     try {
-      const resp = await fetch('/api/v1/skills/upload', { method: 'POST', body: fd, credentials: 'same-origin' })
-      const data = await resp.json()
+      const headers: Record<string, string> = {}
+      const csrf = csrfToken()
+      if (csrf) headers['X-CSRF-Token'] = csrf
+      const resp = await fetch('/api/v1/skills/upload', { method: 'POST', body: fd, headers, credentials: 'same-origin' })
+      const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(data?.error?.message || '上传失败')
       setMsg(`已发布 Skill ${data.data.slug}`)
       load()

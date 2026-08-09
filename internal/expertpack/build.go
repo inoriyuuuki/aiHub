@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -88,10 +89,15 @@ type Result struct {
 // and zip entries are emitted in sorted order with fixed timestamps, so equal
 // inputs always produce identical bytes and hashes.
 func Build(spec Spec) (*Result, error) {
-	if spec.PackSlug == "" {
-		return nil, fmt.Errorf("pack slug is required")
+	if !safeSlug(spec.PackSlug) {
+		return nil, fmt.Errorf("pack slug is invalid")
 	}
 	members := append([]Member(nil), spec.Members...)
+	for _, m := range members {
+		if !safeSlug(m.Slug) {
+			return nil, fmt.Errorf("member slug %q is invalid", m.Slug)
+		}
+	}
 	sort.SliceStable(members, func(i, j int) bool { return members[i].Slug < members[j].Slug })
 
 	coordinator := renderCoordinator(spec, members)
@@ -159,6 +165,10 @@ func Build(spec Spec) (*Result, error) {
 	}
 	return &Result{Archive: archive, Manifest: manifest, Coordinator: coordinator}, nil
 }
+
+var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+func safeSlug(s string) bool { return slugPattern.MatchString(s) }
 
 // fixed zip timestamp (2000-01-01 UTC) for reproducible builds.
 var zipTime = mustTime()

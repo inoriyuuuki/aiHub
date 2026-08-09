@@ -2,15 +2,18 @@ package mcpcat
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aihub/aihub/internal/platform/db"
 	"github.com/aihub/aihub/internal/platform/httpx"
+	"github.com/aihub/aihub/internal/platform/slug"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -53,6 +56,13 @@ func nonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+func sameNullable(a, b sql.NullInt64) bool {
+	if !a.Valid || !b.Valid {
+		return a.Valid == b.Valid
+	}
+	return a.Int64 == b.Int64
 }
 
 func (s *Service) handleListDefinitions(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +124,10 @@ func (s *Service) handleCreateDefinition(w http.ResponseWriter, r *http.Request)
 	}
 	if in.Name == "" || in.Slug == "" {
 		httpx.WriteError(w, httpx.ErrUnprocessable("名称和 slug 不能为空"))
+		return
+	}
+	if !slug.Valid(in.Slug) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _"))
 		return
 	}
 	if in.Transport == "" {
@@ -242,12 +256,28 @@ func (s *Service) handleAddDefVersion(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrUnprocessable(err.Error()))
 		return
 	}
+	var defStatus string
+	if err := s.db.QueryRow(r.Context(), `SELECT status FROM mcp_definitions WHERE id=$1`, id).Scan(&defStatus); err == pgx.ErrNoRows {
+		httpx.WriteError(w, httpx.ErrNotFound("定义不存在"))
+		return
+	} else if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if defStatus == "archived" {
+		httpx.WriteError(w, httpx.ErrConflict("已归档定义不能发布新版本"))
+		return
+	}
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
+	if _, err := tx.Exec(r.Context(), `SELECT id FROM mcp_definitions WHERE id=$1 FOR UPDATE`, id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 	var nextVer int
 	if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(version),0)+1 FROM mcp_definition_versions WHERE definition_id=$1`, id).Scan(&nextVer); err != nil {
 		httpx.WriteError(w, err)
@@ -400,6 +430,10 @@ func (s *Service) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrUnprocessable("名称和 slug 不能为空"))
 		return
 	}
+	if !slug.Valid(in.Slug) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("slug 只能包含小写字母、数字、- 和 _"))
+		return
+	}
 	if in.Scope == "" {
 		in.Scope = "global"
 	}
@@ -524,6 +558,27 @@ func (s *Service) handleAddProfileItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if !exists {
 		httpx.WriteError(w, httpx.ErrUnprocessable("MCP 版本不存在"))
+		return
+	}
+	// Definition must be published and belong to the same project scope as the profile.
+	var defStatus string
+	var defProject sql.NullInt64
+	if err := s.db.QueryRow(r.Context(), `SELECT status, project_id FROM mcp_definitions WHERE id=$1`, req.DefinitionID).Scan(&defStatus, &defProject); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if defStatus == "archived" {
+		httpx.WriteError(w, httpx.ErrUnprocessable("不能添加已归档的 MCP 定义"))
+		return
+	}
+	var profScope string
+	var profProject sql.NullInt64
+	if err := s.db.QueryRow(r.Context(), `SELECT scope, project_id FROM mcp_profiles WHERE id=$1`, id).Scan(&profScope, &profProject); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if !sameNullable(profProject, defProject) {
+		httpx.WriteError(w, httpx.ErrUnprocessable("Profile 与 MCP 定义的项目范围不一致"))
 		return
 	}
 	tx, err := s.db.Begin(r.Context())
@@ -754,12 +809,18 @@ func (s *Service) handleInstallManifest(w http.ResponseWriter, r *http.Request) 
 		}
 		manifest.MCPServers = append(manifest.MCPServers, server)
 	}
+	enabledList := make([]string, 0, len(enabledSet))
 	for t := range enabledSet {
-		manifest.EnabledTools = append(manifest.EnabledTools, t)
+		enabledList = append(enabledList, t)
 	}
+	sort.Strings(enabledList)
+	manifest.EnabledTools = enabledList
+	disabledList := make([]string, 0, len(disabledSet))
 	for t := range disabledSet {
-		manifest.DisabledTools = append(manifest.DisabledTools, t)
+		disabledList = append(disabledList, t)
 	}
+	sort.Strings(disabledList)
+	manifest.DisabledTools = disabledList
 	if prof.ProjectID != nil {
 		var slug string
 		_ = s.db.QueryRow(ctx, `SELECT slug FROM projects WHERE id=$1`, *prof.ProjectID).Scan(&slug)
