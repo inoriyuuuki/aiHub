@@ -1,0 +1,31 @@
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+admin_password.txt
+*.pem
+*.key
+
+# Build artifacts
+frontend/node_modules/
+frontend/dist/
+internal/web/dist/
+dist/
+bin/
+*.exe
+
+# Go
+*.test
+coverage.out
+*.prof
+
+# Local data & tooling
+*.log
+.DS_Store
+.idea/
+.vscode/
+.aihub-backups/
+.aihub-mcp-managed.json
+.aihub-managed.json
+aihub-server
+aihub

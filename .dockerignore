@@ -1,0 +1,13 @@
+.git
+.github
+docs
+frontend/node_modules
+frontend/dist
+internal/web/dist
+*.log
+*.md
+docker-compose*.yml
+.env
+.env.*
+admin_password.txt
+.aihub-backups

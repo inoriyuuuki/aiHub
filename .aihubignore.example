@@ -1,0 +1,20 @@
+# AIHub Skill/专家包发布排除规则（复制为 .aihubignore 并按需修改）
+# 安全默认排除项（.git、Secret、依赖缓存、超大文件）无法通过反向规则重新加入。
+
+# 构建产物
+build/
+dist/
+out/
+
+# 本地开发
+*.local
+*.tmp
+*.swp
+
+# 测试与覆盖率
+coverage.out
+*.test
+
+# 其它
+notes/
+scratch/

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aihub
+          POSTGRES_PASSWORD: aihub
+          POSTGRES_DB: aihub
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aihub -d aihub"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: aihub
+          MINIO_ROOT_PASSWORD: aihub-secret
+        command: server /data
+        ports: ["9000:9000"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Frontend build
+        working-directory: frontend
+        run: npm ci && npm run build
+      - name: Go build
+        run: go build ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test ./internal/... ./cmd/...
+      - name: Integration tests
+        env:
+          AIHUB_TEST_DATABASE_URL: postgres://aihub:aihub@localhost:5432/aihub?sslmode=disable
+          AIHUB_TEST_MINIO_ENDPOINT: localhost:9000
+          AIHUB_TEST_MINIO_ACCESS_KEY: aihub
+          AIHUB_TEST_MINIO_SECRET_KEY: aihub-secret
+        run: go test -tags=integration -count=1 ./internal/tests/...
+
+  docker:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: aihub/aihub:ci-${{ github.sha }}

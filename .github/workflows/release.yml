@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Build CLI binaries
+        run: |
+          mkdir -p dist
+          for os in darwin linux windows; do
+            for arch in amd64 arm64; do
+              ext=""
+              [ "$os" = "windows" ] && ext=".exe"
+              CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+                -o dist/aihub-$os-$arch$ext ./cmd/aihub
+            done
+          done
+          (cd dist && for f in aihub-*; do shasum -a 256 "$f" > "$f.sha256"; done)
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: aihub/aihub
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern=latest
+            type=sha
+
+      - name: Set up QEMU & Buildx
+        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
