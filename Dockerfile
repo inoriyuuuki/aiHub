@@ -39,6 +39,7 @@ FROM debian:bookworm-slim
 ARG VERSION=0.1.0
 ARG BUILD=dev
 ARG COMMIT=unknown
+ARG AIHUB_PORT=8080
 
 LABEL org.opencontainers.image.title="aihub" \
       org.opencontainers.image.version="${VERSION}" \
@@ -59,9 +60,11 @@ RUN chmod +x /app/bin/aihub-server /app/bin/aihub \
     && mkdir -p /app/data /app/logs
 
 # aihub-server: HTTP API + 静态前端 + Streamable HTTP MCP 端点
-EXPOSE 8080
+# 端口通过环境变量 AIHUB_PORT 配置（docker run -e AIHUB_PORT=9000 -p 9000:9000 ...）
+EXPOSE ${AIHUB_PORT}
 
 ENV APP_ENV=production \
+    AIHUB_PORT=${AIHUB_PORT} \
     AIHUB_DATA_DIR=/app/data \
     AIHUB_LOG_DIR=/app/logs
 

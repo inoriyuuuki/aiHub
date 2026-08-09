@@ -21,6 +21,10 @@ frontend/node_modules/
 frontend/dist/
 dist/
 *.local
+
+# 保留已提交的预构建前端资源（Docker/go:embed 构建依赖）
+!internal/web/dist/
+!internal/web/dist/**
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -38,3 +42,11 @@ admin_password.txt
 # Temp / scratch
 test.txt
 tmp/
+
+# Runtime data
+/data/
+/logs/
+
+# Packaged artifacts
+*.tar.gz
+coverage.out

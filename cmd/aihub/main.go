@@ -106,6 +106,9 @@ func cmdLogin(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
 	fmt.Printf("已登录 %s（用户 %s，scopes: %s）\n", cfg.ServerURL, cfg.Username, strings.Join(cfg.Scopes, ","))
 	return nil
 }
