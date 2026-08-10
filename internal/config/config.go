@@ -54,6 +54,22 @@ func env(key, def string) string {
 	return def
 }
 
+// normalizeMinIOEndpoint reduces an S3/MinIO endpoint to host[:port] form,
+// which is what minio-go requires. It tolerates accidental schemes
+// ("http://minio:9000") and path suffixes ("minio:9000/aihub" or
+// "http://minio:9000/aihub") that minio-go otherwise rejects with
+// "Endpoint url cannot have fully qualified paths."
+func normalizeMinIOEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if i := strings.Index(endpoint, "://"); i >= 0 {
+		endpoint = endpoint[i+len("://"):]
+	}
+	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
+		endpoint = endpoint[:i]
+	}
+	return endpoint
+}
+
 func envBool(key string, def bool) bool {
 	v := os.Getenv(key)
 	if v == "" {
@@ -96,7 +112,7 @@ func Load() (*Config, error) {
 		HTTPAddr:          env("AIHUB_HTTP_ADDR", ":8080"),
 		PublicBaseURL:     env("AIHUB_PUBLIC_BASE_URL", "http://localhost:8080"),
 		DatabaseURL:       env("AIHUB_DATABASE_URL", "postgres://aihub:aihub@localhost:5432/aihub?sslmode=disable"),
-		MinIOEndpoint:     env("AIHUB_MINIO_ENDPOINT", "localhost:9000"),
+		MinIOEndpoint:     normalizeMinIOEndpoint(env("AIHUB_MINIO_ENDPOINT", "localhost:9000")),
 		MinIOAccessKey:    env("AIHUB_MINIO_ACCESS_KEY", "aihub"),
 		MinIOSecretKey:    env("AIHUB_MINIO_SECRET_KEY", "aihub-secret"),
 		MinIOUseSSL:       envBool("AIHUB_MINIO_USE_SSL", false),
