@@ -11,3 +11,8 @@ docker-compose*.yml
 .env.*
 admin_password.txt
 .aihub-backups
+
+test.txt
+*.tmp
+.DS_Store
+bin/

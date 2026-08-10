@@ -30,3 +30,10 @@ coverage.out
 .aihub-managed.json
 aihub-server
 aihub
+
+# Temp / scratch files
+test.txt
+*.tmp
+*.swp
+scratch/
+notes/
