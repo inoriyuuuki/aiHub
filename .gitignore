@@ -28,8 +28,8 @@ coverage.out
 .aihub-backups/
 .aihub-mcp-managed.json
 .aihub-managed.json
-aihub-server
-aihub
+/aihub-server
+/aihub
 
 # Temp / scratch files
 test.txt
