@@ -1,0 +1,140 @@
+# =============================================================================
+# AIHub Docker 镜像构建工作流（完整版：PostgreSQL + MinIO）
+# 参考: serverCli/.github/workflows/docker-build.yml.disabled 与旧版 docker-build.yml
+#
+# 触发方式:
+#   1) 推送 tag（如 v1.0.0）-> 构建并推送到 Docker Hub
+#   2) 手动触发 workflow_dispatch -> 可选指定 tag 与目标平台
+#
+# 镜像名优先级:
+#   DOCKER_IMAGE 仓库变量 > inoriyuuki/aihub
+# 例如在 GitHub 仓库 Settings -> Secrets and variables -> Actions -> Variables
+# 添加 DOCKER_IMAGE=inoriyuuki/aihub 可固定推送到自己的 Docker Hub 账号
+#
+# 所需 Secrets:
+#   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN（Docker Hub 个人访问令牌，权限 Read & Write）
+# =============================================================================
+
+name: Publish AIHub Docker image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的 tag（可选，留空则直接构建当前分支，TAG=分支名）'
+        required: false
+        type: string
+      platforms:
+        description: 'Target platforms (comma separated)'
+        required: false
+        default: 'linux/amd64'
+        type: string
+
+jobs:
+  build:
+    name: Build & push
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag '$TAG' does not exist"
+              exit 1
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG=${GITHUB_REF#refs/tags/}
+          fi
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "${TAG}" > VERSION
+          echo "Building tag: ${TAG}"
+
+      - name: Resolve image name
+        id: img
+        run: |
+          if [ -n "${{ vars.DOCKER_IMAGE }}" ]; then
+            IMAGE="${{ vars.DOCKER_IMAGE }}"
+          else
+            IMAGE="inoriyuuki/aihub"
+          fi
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Resolved image: ${IMAGE}"
+
+      - name: Set up QEMU (multi-platform)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify Docker Hub secrets
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+            echo "::error::未配置 secret DOCKERHUB_USERNAME"
+            exit 1
+          fi
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::未配置 secret DOCKERHUB_TOKEN"
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=aihub
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:latest
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Image summary
+        run: |
+          echo "### Docker Image Digest" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.IMAGE }}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
